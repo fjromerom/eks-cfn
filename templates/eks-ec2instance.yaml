@@ -1,0 +1,101 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Deploy an EC2 Instance to manage the EKS cluster
+Parameters:
+  EC2InstanceHostName:
+    Default: EC2InstanceforEKS
+    Description: The value used for the name tag of the instance
+    Type: String
+  EC2InstanceInstanceType:
+    Default: t3.medium
+    Description: Amazon EC2 instance type for the instance
+    Type: String
+  PrivateSubnet1ID:
+    Type: String
+  S3BucketName:
+    Type: String
+  S3KeyPrefix:
+    Type: String
+  S3BucketRegion:
+    Type: String
+  LatestAmiId:
+    Default: "/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2"
+    Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
+  AlternativeIAMRole:
+    Description: An existing IAM Role name to attach to the instance.
+    Type: String
+  EnvironmentVariables:
+    Description: A comma-separated list of environment variables for use in bootstrapping. Variables must be in the format KEY=VALUE. VALUE cannot contain commas.
+    Type: String
+Resources:
+  EC2InstanceHostProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Roles:
+        - !Ref AlternativeIAMRole
+      Path: /
+  EC2Instance:
+    Type: "AWS::EC2::Instance"
+    Metadata:
+      'AWS::CloudFormation::Authentication':
+        S3AccessCreds:
+          type: S3
+          roleName: !Ref AlternativeIAMRole
+          buckets: !Ref S3BucketName
+      'AWS::CloudFormation::Init':
+        config:
+          files:
+            /usr/local/bin/kubectl:
+              source: !Sub https://${S3BucketName}.s3.${S3BucketRegion}.${AWS::URLSuffix}/${S3KeyPrefix}/binaries/kubectl
+              mode: '000555'
+              owner: root
+              group: root
+              authentication: S3AccessCreds
+            /usr/local/bin/helm:
+              source: !Sub https://${S3BucketName}.s3.${S3BucketRegion}.${AWS::URLSuffix}/${S3KeyPrefix}/binaries/helm
+              mode: '000555'
+              owner: root
+              group: root
+              authentication: S3AccessCreds
+    Properties:
+      IamInstanceProfile: !Ref EC2InstanceHostProfile
+      ImageId: !Ref LatestAmiId
+      SubnetId: !Ref PrivateSubnet1ID
+      InstanceType: !Ref EC2InstanceInstanceType
+      Tags:
+      - Key: Name
+        Value: !Ref EC2InstanceHostName
+      UserData:
+        Fn::Base64: !Sub |
+            #!/bin/bash
+            set -x
+
+            # Set environment variables
+            for e in $(echo "${EnvironmentVariables}" | tr ',' ' '); do
+              export $e
+            done
+
+            # Kubeconfig
+            su ec2-user bash -c "aws eks update-kubeconfig --name $K8S_CLUSTER_NAME --region ${AWS::Region}"
+
+            cat > /etc/profile.d/kubectl.sh <<EOF
+            #!/bin/bash
+            if [[ ":\$PATH:" != *":/usr/local/bin:"* ]]; then PATH="\$PATH:/usr/local/bin"; fi
+            source <(kubectl completion bash)
+            EOF
+            chmod +x /etc/profile.d/kubectl.sh
+
+            # Install the packages from the metadata & perform CFN signaling
+            export PATH=$PATH:/opt/aws/bin
+            cfn-init -v --stack '${AWS::StackName}' --resource EC2Instance --region ${AWS::Region}
+            cfn-signal -e $? --stack ${AWS::StackName} --region ${AWS::Region} --resource EC2Instance
+
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT2M
+Outputs:
+  EC2InstanceForEKSIP:
+    Description: EC2 Instance private IP
+    Value: !GetAtt EC2Instance.PrivateIp
+  EC2InstanceForEKSRole:
+    Description: EC2 Instance IAM Role name
+    Value: !Ref AlternativeIAMRole

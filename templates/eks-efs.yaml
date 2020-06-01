@@ -1,0 +1,86 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Deploys an EFS filesystem and efs-provisioner helm chart
+Parameters:
+  VPCID:
+    Type: String
+  EFSSubnetIds:
+    Type: List<String>
+  PerformanceMode:
+    Type: String
+    AllowedValues: [ generalPurpose, maxIO ]
+    Default: generalPurpose
+  ProvisionedThroughputInMibps:
+    Type: Number
+    Default: 0
+  ThroughputMode:
+    Type: String
+    AllowedValues: [ bursting, provisioned ]
+    Default: bursting
+  ClusterName:
+    Type: String
+Rules:
+  ProvisionedThroughput:
+    RuleCondition: !Equals [ !Ref ThroughputMode, provisioned ]
+    Assertions:
+      - Assert: !Not [ !Equals [ '0', !Ref ProvisionedThroughputInMibps ] ]
+        AssertDescription: "ProvisionedThroughputInMibps must be greater than 0 when ThroughputMode is provisioned"
+  BurstingThroughput:
+    RuleCondition: !Equals [ !Ref ThroughputMode, bursting ]
+    Assertions:
+      - Assert:  !Equals [ '0', !Ref ProvisionedThroughputInMibps ]
+        AssertDescription: "ProvisionedThroughputInMibps must be 0 when ThroughputMode is bursting"
+Conditions:
+  IsProvisioned: !Equals [ ThroughputMode, provisioned ]
+Resources:
+  EFSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPCID
+      GroupDescription: Security group for mount target
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 2049
+        ToPort: 2049
+        CidrIp: 0.0.0.0/0
+  EFSFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      PerformanceMode: !Ref PerformanceMode
+      ProvisionedThroughputInMibps: !If [ IsProvisioned, !Ref ProvisionedThroughputInMibps, !Ref 'AWS::NoValue' ]
+      ThroughputMode: !Ref ThroughputMode
+  MountTargetPrivateSubnet1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      SecurityGroups: [ !Ref EFSSecurityGroup ]
+      SubnetId: !Select [0, !Ref EFSSubnetIds]
+  MountTargetPrivateSubnet2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      SecurityGroups: [ !Ref EFSSecurityGroup ]
+      SubnetId: !Select [1, !Ref EFSSubnetIds]
+  MountTargetPrivateSubnet3:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      SecurityGroups: [ !Ref EFSSecurityGroup ]
+      SubnetId: !Select [2, !Ref EFSSubnetIds]
+  EFSProvisioner:
+    Type: 'AWSQS::Kubernetes::Helm'
+    DeletionPolicy: Retain
+    Properties:
+      ClusterID: !Ref ClusterName
+      Namespace: efs-provisioner
+      Chart: stable/efs-provisioner
+      VPCConfiguration:
+        SecurityGroupIds: [ !Ref EFSSecurityGroup ]
+        SubnetIds: !Ref EFSSubnetIds
+      Values:
+        efsProvisioner.efsFileSystemId: !Ref EFSFileSystem
+        efsProvisioner.awsRegion: !Ref 'AWS::Region'
+        efsProvisioner.provisionerName: aws/aws-efs
+Outputs:
+  EFSFileSystem:
+    Value: !Ref EFSFileSystem

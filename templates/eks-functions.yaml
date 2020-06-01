@@ -1,0 +1,132 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Deploys Lambda functions required for the creation of resources
+Parameters:
+  S3BucketName:
+    Type: String
+  S3KeyPrefix:
+    Type: String
+  KubernetesAdminRoleArn:
+    Type: String
+  VPCID:
+    Type: String
+  GetCallerArnRoleArn:
+    Type: String
+  CreateVpcRoleRoleArn:
+    Type: String
+  RegisterTypeRoleArn:
+    Type: String
+  LogRoleArn:
+    Type: String
+  EksClusterResourceExecutionRoleArn:
+    Type: String
+  HelmExecutionRoleArn:
+    Type: String
+  EKSSubnetIds:
+    Type: List<String>
+Resources:
+  KubectlLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      Content:
+        S3Bucket: !Ref S3BucketName
+        S3Key: !Sub '${S3KeyPrefix}/functions/kubectlLayer/lambda.zip'
+  AwsCliLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      Content:
+        S3Bucket: !Ref S3BucketName
+        S3Key: !Sub '${S3KeyPrefix}/functions/awscliLayer/lambda.zip'
+  CrhelperLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      CompatibleRuntimes:
+        - python3.6
+        - python3.7
+      Content:
+        S3Bucket: !Ref S3BucketName
+        S3Key: !Sub '${S3KeyPrefix}/functions/crhelperLayer/lambda.zip'
+  CreateVpcRoleLambda:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Handler: lambda_function.lambda_handler
+      MemorySize: 128
+      Role: !Ref CreateVpcRoleRoleArn
+      Layers: [!Ref CrhelperLayer]
+      Runtime: python3.7
+      Timeout: 900
+      Code:
+        S3Bucket: !Ref S3BucketName
+        S3Key: !Sub '${S3KeyPrefix}/functions/createVpcRole/lambda.zip'
+  CreateVpcRole:
+    Type: Custom::CreateVpcRole
+    Properties:
+      ServiceToken: !GetAtt CreateVpcRoleLambda.Arn
+      Partition: !Ref "AWS::Partition"
+  RegisterTypeFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Handler: lambda_function.lambda_handler
+      MemorySize: 128
+      Role: !Ref RegisterTypeRoleArn
+      Layers: [!Ref CrhelperLayer]
+      Runtime: python3.7
+      Timeout: 900
+      Code:
+        S3Bucket: !Ref S3BucketName
+        S3Key: !Sub '${S3KeyPrefix}/functions/registerType/lambda.zip'
+  RegisterEksClusterType:
+    Type: Custom::RegisterType
+    Properties:
+      ServiceToken: !GetAtt RegisterTypeFunction.Arn
+      TypeName: "AWSQS::EKS::Cluster"
+      SchemaHandlerPackage: !Sub "s3://${S3BucketName}/${S3KeyPrefix}/functions/EksClusterResource/aws-eks-cluster.zip"
+      LogRoleArn: !Ref LogRoleArn
+      LogGroupName: "aws-eks-cluster-logs"
+      ExecutionRoleArn: !Ref EksClusterResourceExecutionRoleArn
+  RegisterHelmType:
+    Type: Custom::RegisterType
+    Properties:
+      ServiceToken: !GetAtt RegisterTypeFunction.Arn
+      TypeName: "AWSQS::Kubernetes::Helm"
+      SchemaHandlerPackage: !Sub "s3://${S3BucketName}/${S3KeyPrefix}/functions/HelmReleaseResource/aws-kubernetes-helm.zip"
+      LogRoleArn: !Ref LogRoleArn
+      LogGroupName: "aws-kubernetes-helm-logs"
+      ExecutionRoleArn: !Ref HelmExecutionRoleArn
+  EKSLambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for lambda to communicate with cluster API
+      VpcId: !Ref VPCID
+  KubeGetLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: lambda_function.lambda_handler
+      MemorySize: 256
+      Role: !Ref KubernetesAdminRoleArn
+      Runtime: python3.7
+      Timeout: 900
+      Layers: [!Ref KubectlLayer, !Ref CrhelperLayer, !Ref AwsCliLayer]
+      Code:
+        S3Bucket: !Ref S3BucketName
+        S3Key: !Sub '${S3KeyPrefix}/functions/KubeGet/lambda.zip'
+      Environment: { Variables: { KUBECONFIG: /tmp/.kube/config } }
+      VpcConfig:
+        SecurityGroupIds: [!Ref EKSLambdaSecurityGroup]
+        SubnetIds: !Ref EKSSubnetIds
+  GetCallerArnLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: lambda_function.lambda_handler
+      MemorySize: 128
+      Role: !Ref GetCallerArnRoleArn
+      Runtime: python3.7
+      Timeout: 900
+      Layers: [!Ref CrhelperLayer]
+      Code:
+        S3Bucket: !Ref S3BucketName
+        S3Key: !Sub '${S3KeyPrefix}/functions/GetCallerArn/lambda.zip'
+Outputs:
+  KubeGetLambdaArn:
+    Value: !GetAtt KubeGetLambda.Arn
+  GetCallerArnLambdaArn:
+    Value: !GetAtt GetCallerArnLambda.Arn

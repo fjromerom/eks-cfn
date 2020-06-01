@@ -1,0 +1,40 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Deploys EKS worker nodes into the EKS cluster
+Parameters:
+  EKSSubnetIds:
+    Type: List<String>
+  NodeInstanceType:
+    Type: String
+  NumberOfNodes:
+    Type: Number
+  MaxNumberOfNodes:
+    Description: "[OPTIONAL] The maximum number of Amazon EKS node instances, if left blank will be set to the same value as NumberOfNodes"
+    Type: String
+  NodeVolumeSize:
+    Default: 20
+    Description: The size for the EKS worker node's root EBS volumes.
+    Type: String
+  ManagedNodeGroupAMIType:
+    AllowedValues: [ "AL2_x86_64", " AL2_x86_64_GPU"]
+    Type: String
+  EKSControlPlane:
+    Type: String
+  NodeInstanceRoleArn:
+    Type: String
+Conditions:
+  MaxNodes: !Not [ !Equals [ !Ref MaxNumberOfNodes, "" ] ]
+Resources:
+  EKSNodegroup:
+    Type: 'AWS::EKS::Nodegroup'
+    Properties:
+      ClusterName: !Ref EKSControlPlane
+      NodeRole: !Ref NodeInstanceRoleArn
+      AmiType: !Ref 'ManagedNodeGroupAMIType'
+      InstanceTypes:
+        - !Ref 'NodeInstanceType'
+      DiskSize: !Ref NodeVolumeSize
+      ScalingConfig:
+        MinSize: !Ref NumberOfNodes
+        DesiredSize: !Ref NumberOfNodes
+        MaxSize: !If [ MaxNodes, !Ref MaxNumberOfNodes, !Ref NumberOfNodes ]
+      Subnets: !Ref EKSSubnetIds

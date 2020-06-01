@@ -1,0 +1,70 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Deploys the EKS control plane"
+Parameters:
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+  RoleArn:
+    Type: String
+  NodeInstanceRoleArn:
+    Type: String
+  GetCallerArnLambdaArn:
+    Type: String
+  KubernetesVersion:
+    Type: String
+  EC2InstanceForEKSRole:
+    Type: String
+    Default: ""
+  FunctionRoleArn:
+    Type: String
+  HelmExecutionRoleArn:
+    Type: String
+  EKSClusterLoggingTypes:
+    Type: List<String>
+    Default: ""
+Conditions:
+  LoggingEnabled: !Not [ !Equals [ !Select [ 0, !Ref EKSClusterLoggingTypes ], "" ] ]
+Resources:
+  EKS:
+    Type: "AWSQS::EKS::Cluster"
+    Properties:
+      ResourcesVpcConfig:
+        SecurityGroupIds: !Ref SecurityGroupIds
+        SubnetIds: !Ref SubnetIds
+        EndpointPrivateAccess: true
+        EndpointPublicAccess: false
+      EnabledClusterLoggingTypes: !If [ LoggingEnabled, !Ref EKSClusterLoggingTypes, !Ref "AWS::NoValue" ]
+      RoleArn: !Ref RoleArn
+      Version: !Ref KubernetesVersion
+      KubernetesApiAccess:
+        Roles:
+          - Arn: !Ref NodeInstanceRoleArn
+            Username: 'system:node:{{EC2PrivateDNSName}}'
+            Groups: [ 'system:bootstrappers', 'system:nodes' ]
+          - Arn: !Ref FunctionRoleArn
+            Username: !Ref FunctionRoleArn
+            Groups: [ 'system:masters' ]
+          - Arn: !Ref HelmExecutionRoleArn
+            Username: !Ref HelmExecutionRoleArn
+            Groups: [ 'system:masters' ]
+          - Arn: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${EC2InstanceForEKSRole}"
+            Username: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${EC2InstanceForEKSRole}"
+            Groups: [ 'system:masters' ]
+        Users:
+          - Arn: !GetAtt CallerArn.Arn
+            Username: !GetAtt CallerArn.Arn
+            Groups: [ 'system:masters' ]
+  CallerArn:
+    Type: Custom::GetCallerArn
+    Properties:
+      ServiceToken: !Ref GetCallerArnLambdaArn
+Outputs:
+  EksArn:
+    Value: !GetAtt EKS.Arn
+  CAData:
+    Value: !GetAtt EKS.CertificateAuthorityData
+  EKSEndpoint:
+    Value: !GetAtt EKS.Endpoint
+  EKSName:
+    Value: !Ref EKS
